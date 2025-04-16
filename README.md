@@ -1,7 +1,3 @@
-Berikut adalah **README.md** yang telah diperbarui sesuai dengan permintaan Anda:
-
----
-
 # Node AI Setup
 
 Panduan untuk **setup nodes** yang terhubung ke **inference**.
