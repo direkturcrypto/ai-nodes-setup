@@ -46,7 +46,7 @@ EOF
 
     chmod +x ./install.sh
     ./install.sh
-    service restart vikey-inference
+    service vikey-inference restart
     cd ..
 fi
 
