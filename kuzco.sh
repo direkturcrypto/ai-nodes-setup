@@ -1,12 +1,5 @@
 #!/bin/bash
 
-# ===== CHECK FOR ROOT PERMISSION =====
-if [ "$EUID" -ne 0 ]; then
-  echo "🚫 This script must be run as root!"
-  echo "➡️  Please run: sudo ./kuzco.sh"
-  exit 1
-fi
-
 clear
 echo "=================================================="
 echo " 🚀 Powered by DirekturCrypto"
