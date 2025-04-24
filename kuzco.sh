@@ -94,17 +94,17 @@ if grep -q "YOUR_VPS_IP" nginx.conf; then
 fi
 
 # ===== Inject WORKER_ID and WORKER_CODE into docker-compose.yml =====
-if grep -q "WORKER_ID" docker-compose.yml; then
-    sed -i "s/WORKER_ID=.*/WORKER_ID=$WORKER_ID/" docker-compose.yml
+if grep -q "KUZCO_WORKER" docker-compose.yml; then
+    sed -i "s/KUZCO_WORKER=.*/YOUR_WORKER_ID=$WORKER_ID/" docker-compose.yml
 else
     echo "    environment:" >> docker-compose.yml
-    echo "      - WORKER_ID=$WORKER_ID" >> docker-compose.yml
+    echo "      - KUZCO_WORKER=$WORKER_ID" >> docker-compose.yml
 fi
 
-if grep -q "WORKER_CODE" docker-compose.yml; then
-    sed -i "s/WORKER_CODE=.*/WORKER_CODE=$WORKER_CODE/" docker-compose.yml
+if grep -q "KUZCO_CODE" docker-compose.yml; then
+    sed -i "s/KUZCO_CODE=.*/KUZCO_CODE=$WORKER_CODE/" docker-compose.yml
 else
-    echo "      - WORKER_CODE=$WORKER_CODE" >> docker-compose.yml
+    echo "      - KUZCO_CODE=$WORKER_CODE" >> docker-compose.yml
 fi
 
 cd ..
@@ -112,6 +112,7 @@ cd ..
 # ===== RUN SETUP =====
 chmod +x ./kuzco-manager.sh
 ./kuzco-manager.sh setup --count "$NODE_COUNT" --start-from-id 1
+cd kuzco-installer-docker
 
 # ===== DONE MESSAGE =====
 echo ""
