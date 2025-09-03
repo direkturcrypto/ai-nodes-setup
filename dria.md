@@ -126,5 +126,3 @@ docker-compose logs -f
 ## 🙏 Credits
 
 This setup is proudly **powered by direkturcrypto**.
-
-Would you like me to also add a **status command** in `manage-dria.sh` (so users can see ✅ UP / ❌ DOWN for each node without digging into Docker logs)?
