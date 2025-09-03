@@ -1,186 +1,204 @@
 #!/bin/bash
 
-# ========== Config ==========
-REPO_URL="https://github.com/firstbatchxyz/dkn-compute-node"
-PRIVATE_KEY_FILE="$HOME/.dria_node.env"
-DOCKER_NETWORK="dria-network"
-DOCKER_SUBNET="10.173.1.0/24"
-# ============================
+set -e
 
-# Cek argumen
-if [[ "$1" != "setup" || "$2" != "--count" || -z "$3" ]]; then
-  echo "❌ Usage: ./dria-setup.sh setup --count <jumlah_node>"
+echo "🛠️ Starting setup...  (powered by direkturcrypto)"
+
+### 0. Ask for VIKEY_API_KEY early
+echo -n "🔐 Enter your VIKEY_API_KEY: "
+read -r VIKEY_API_KEY
+if [ -z "$VIKEY_API_KEY" ]; then
+  echo "❌ VIKEY_API_KEY cannot be empty. Aborting."
   exit 1
 fi
 
-COUNT=$3
+### 1. Install dependencies
+echo "📦 Installing dependencies (docker, docker-compose, nodejs, npm, pm2, curl, git, jq, nano)..."
+sudo apt update -y
+sudo apt install -y curl git nano jq
 
-# 🚀 Cek dan install docker
-install_docker_if_needed() {
-  if ! command -v docker &>/dev/null; then
-    echo "🔧 Installing Docker..."
-    curl -fsSL https://get.docker.com | bash
-    sudo usermod -aG docker $USER
-  else
-    echo "✅ Docker sudah terinstall."
-  fi
-}
+# Install Docker
+if ! command -v docker &> /dev/null; then
+    echo "🐳 Installing Docker..."
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker "$USER" || true
+    echo "ℹ️ If this is your first Docker install, you may need to log out/in for group changes to apply."
+else
+    echo "✅ Docker already installed."
+fi
 
-# 🔍 Deteksi docker compose
-detect_compose() {
-  if command -v docker-compose &>/dev/null; then
-    COMPOSE_BIN="docker-compose"
-  elif docker compose version &>/dev/null; then
-    COMPOSE_BIN="docker compose"
-  else
-    echo "❌ Docker Compose tidak ditemukan."
-    exit 1
-  fi
-  echo "✅ Menggunakan: $COMPOSE_BIN"
-}
+# Install Docker Compose (plugin or standalone)
+if ! command -v docker-compose &> /dev/null; then
+    echo "🐳 Installing Docker Compose..."
+    sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+      -o /usr/local/bin/docker-compose
+    sudo chmod +x /usr/local/bin/docker-compose
+else
+    echo "✅ docker-compose already installed."
+fi
 
-# 🔐 Ambil PRIVATE_KEY
-get_private_key() {
-  if [ -f "$PRIVATE_KEY_FILE" ]; then
-    source "$PRIVATE_KEY_FILE"
-    if [ -n "$PRIVATE_KEY" ]; then
-      echo "✅ PRIVATE_KEY ditemukan di $PRIVATE_KEY_FILE"
-      return
-    fi
-  fi
+# Install Node.js + npm latest
+echo "📦 Installing Node.js + npm..."
+curl -fsSL https://deb.nodesource.com/setup_current.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo npm install -g npm pm2
+echo "✅ Dependencies installed!"
 
-  echo "🔐 Input PRIVATE_KEY kamu (32-byte hex):"
-  read -rp "PRIVATE_KEY: " PRIVATE_KEY
-  echo "PRIVATE_KEY=$PRIVATE_KEY" >"$PRIVATE_KEY_FILE"
-  echo "✅ Disimpan di $PRIVATE_KEY_FILE"
-}
+### 2. Setup Vikey
+echo "🔑 Setting up Vikey..."
+cd ~/
+if [ ! -d "vikey-inference" ]; then
+    git clone https://github.com/direkturcrypto/vikey-inference
+fi
+cd vikey-inference
 
-# 🌐 Setup docker network
-setup_docker_network() {
-  if ! docker network ls | grep -q "$DOCKER_NETWORK"; then
-    echo "🌐 Membuat docker network: $DOCKER_NETWORK"
-    docker network create --subnet=$DOCKER_SUBNET $DOCKER_NETWORK
-  else
-    echo "✅ Docker network $DOCKER_NETWORK sudah ada."
-  fi
-}
+# Ensure binary is executable if present
+if [ -f "./vikey-inference-linux" ]; then
+  chmod +x ./vikey-inference-linux || true
+fi
 
-# 🧱 Setup node
-setup_node() {
-  local i=$1
-  local DIR="dkn-compute-node-$i"
-  local PORT=$((11433 + i))
-
-  echo "🔧 Setup node $i di folder $DIR (PORT: $PORT)..."
-
-  if [ ! -d "$DIR" ]; then
-    git clone "$REPO_URL" "$DIR"
-  else
-    echo "📂 Folder $DIR sudah ada, skip cloning."
-  fi
-
-  cd "$DIR" || exit
-
-  # nginx.conf
-  cat >nginx.conf <<EOF
-events {}
-
-http {
-    server {
-        listen $PORT;
-
-        location / {
-            proxy_pass http://10.173.1.1:14444;
-            proxy_http_version 1.1;
-            proxy_set_header Host \$host;
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        }
-    }
-}
+cat > .env <<EOF
+# Vikey Inference Configuration
+NODE_PORT=14441
+DEFAULT_MODEL=llama-3.2-3b-instruct
+VIKEY_API_KEY=${VIKEY_API_KEY}
 EOF
 
-  # compose.yml
-  cat >compose.yml <<EOF
-services:
-  nginx:
-    image: nginx:alpine
-    networks:
-      dria-network:
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    restart: unless-stopped
+# Start Vikey
+nohup ./vikey-inference-linux > vikey.log 2>&1 &
+sleep 3
+echo "🚀 Vikey started! (logs: ~/vikey-inference/vikey.log)"
 
-  compute:
+### 3. Test Vikey
+echo "🔍 Testing Vikey..."
+RESPONSE=$(curl -s http://localhost:14441 || true)
+if [[ "$RESPONSE" == *"Endpoint not supported"* ]]; then
+    echo "✅ Vikey OK → Response: ${RESPONSE}"
+else
+    echo "❌ Vikey test failed. Got: ${RESPONSE}"
+    echo "🪵 Check logs: tail -n 200 ~/vikey-inference/vikey.log"
+fi
+
+### 4. Crypto Wallet Generator
+echo "💰 Setting up crypto wallet generator..."
+cd ~/
+mkdir -p crypto-generator
+cd crypto-generator
+npm init -y > /dev/null
+
+# Use ethers v5 (CommonJS) so require() works smoothly
+npm install ethers@5 > /dev/null
+
+cat > crypto-generator.js <<'EOF'
+const fs = require('fs');
+const { Wallet } = require('ethers');
+
+const args = process.argv.slice(2);
+const count = parseInt(args[0] || "1", 10);
+if (isNaN(count) || count < 1) {
+  console.error("Usage: node crypto-generator.js <count>");
+  process.exit(1);
+}
+
+const wallets = [];
+for (let i = 0; i < count; i++) {
+  const w = Wallet.createRandom();
+  wallets.push({
+    address: w.address,
+    private_key: w.privateKey
+  });
+}
+
+fs.writeFileSync("wallets.json", JSON.stringify(wallets, null, 2));
+console.log(`Generated ${count} wallet(s) saved in wallets.json`);
+EOF
+
+echo -n "🤔 How many wallets do you want to generate? "
+read -r WALLET_COUNT
+if ! [[ "$WALLET_COUNT" =~ ^[0-9]+$ ]] || [ "$WALLET_COUNT" -lt 1 ]; then
+  echo "❌ Invalid number. Aborting."
+  exit 1
+fi
+
+node crypto-generator.js "$WALLET_COUNT"
+echo "✅ $WALLET_COUNT wallets generated in ~/crypto-generator/wallets.json"
+
+### 5. Setup Docker Network
+echo "🌐 Ensuring docker network 'dria-nodes' exists..."
+if ! docker network ls | grep -q "dria-nodes"; then
+    docker network create --subnet=10.172.1.0/16 dria-nodes
+    echo "✅ Docker network created!"
+else
+    echo "ℹ️ Docker network already exists."
+fi
+
+### 6. Install Dria Nodes
+echo "⚡ Setting up Dria nodes..."
+cd ~/
+mkdir -p dria-nodes
+cd dria-nodes
+
+WALLETS=$(cat ~/crypto-generator/wallets.json | jq -c '.[]')
+
+i=1
+for row in $WALLETS; do
+  ADDR=$(echo "$row" | jq -r '.address')
+  PRIV=$(echo "$row" | jq -r '.private_key')
+  NODE_DIR="dria-node-$ADDR"
+
+  mkdir -p "$NODE_DIR"
+  cat > "$NODE_DIR/docker-compose.yml" <<EOF
+services:
+  compute_node_$i:
     image: "firstbatch/dkn-compute-node:latest"
     environment:
       RUST_LOG: \${RUST_LOG:-none,dkn_compute=info}
-      DKN_WALLET_SECRET_KEY: \${DKN_WALLET_SECRET_KEY}
-      DKN_MODELS: \${DKN_MODELS}
-      DKN_P2P_LISTEN_ADDR: \${DKN_P2P_LISTEN_ADDR}
-      DKN_RELAY_NODES: \${DKN_RELAY_NODES}
-      DKN_BOOTSTRAP_NODES: \${DKN_BOOTSTRAP_NODES}
-      OPENAI_API_KEY: \${OPENAI_API_KEY}
-      GEMINI_API_KEY: \${GEMINI_API_KEY}
-      OPENROUTER_API_KEY: \${OPENROUTER_API_KEY}
-      SERPER_API_KEY: \${SERPER_API_KEY}
-      JINA_API_KEY: \${JINA_API_KEY}
-      OLLAMA_HOST: \${OLLAMA_HOST}
-      OLLAMA_PORT: \${OLLAMA_PORT}
-      OLLAMA_AUTO_PULL: \${OLLAMA_AUTO_PULL:-true}
-    restart: "on-failure"
-    depends_on:
-      - nginx
+      # Dria
+      DKN_WALLET_SECRET_KEY: $PRIV
+      DKN_MODELS: llama3.3:70b-instruct-q4_K_M,llama3.1:8b-instruct-q4_K_M,llama3.2:1b-instruct-q4_K_M
+      DKN_P2P_LISTEN_ADDR: /ip4/0.0.0.0/tcp/4001
+      # Ollama/Vikey
+      OLLAMA_HOST: http://10.172.1.1
+      OLLAMA_PORT: 14441
+      OLLAMA_AUTO_PULL: true
     networks:
-      dria-network:
-
-volumes:
-  ollama:
+      dria-nodes:
+    restart: "on-failure"
 networks:
-  dria-network:
+  dria-nodes:
     external: true
 EOF
-
-  # .env
-  cat >.env <<EOF
-## DRIA ##
-DKN_WALLET_SECRET_KEY=$PRIVATE_KEY
-DKN_MODELS=deepseek-r1:1.5b,deepseek-r1:7b,deepseek-r1:8b,deepseek-r1:14b,qwen2.5:7b-instruct-fp16,hellord/mxbai-embed-large-v1:f16
-DKN_P2P_LISTEN_ADDR=/ip4/0.0.0.0/tcp/4001
-DKN_RELAY_NODES=
-DKN_BOOTSTRAP_NODES=
-DKN_BATCH_SIZE=
-
-## Ollama ##
-OLLAMA_HOST=http://nginx
-OLLAMA_PORT=$PORT
-OLLAMA_AUTO_PULL=false
-
-## API Keys ##
-OPENAI_API_KEY=
-GEMINI_API_KEY=
-OPENROUTER_API_KEY=
-SERPER_API_KEY=
-JINA_API_KEY=
-
-## Log ##
-RUST_LOG=none
-EOF
-
-  # Jalankan
-  $COMPOSE_BIN up -d
-
-  cd ..
-}
-
-# === MAIN ===
-install_docker_if_needed
-detect_compose
-get_private_key
-setup_docker_network
-
-for i in $(seq 1 "$COUNT"); do
-  setup_node "$i"
+  echo "📝 Node $i configured at $NODE_DIR"
+  i=$((i+1))
 done
 
-echo "🎉 Selesai setup $COUNT node!"
+### 7. Start & Restart helper
+cat > manage-dria.sh <<'EOF'
+#!/bin/bash
+CMD=$1
+case $CMD in
+  start)
+    echo "🚀 Starting all Dria nodes... (powered by direkturcrypto)"
+    for d in dria-node-*/; do
+      (cd "$d" && docker-compose up -d)
+    done
+    echo "✅ All nodes attempted to start."
+    ;;
+  restart)
+    echo "♻️ Restarting all Dria nodes... (powered by direkturcrypto)"
+    for d in dria-node-*/; do
+      (cd "$d" && docker-compose down && docker-compose up -d)
+    done
+    echo "✅ All nodes attempted to restart."
+    ;;
+  *)
+    echo "Usage: ./manage-dria.sh [start|restart]"
+    ;;
+esac
+EOF
+chmod +x manage-dria.sh
+
+echo "✅ Dria nodes setup completed!"
+echo "👉 Use ./manage-dria.sh start to run all nodes"
+echo "👉 Use ./manage-dria.sh restart to restart all nodes"
+echo "🙏 Credits: powered by direkturcrypto"
