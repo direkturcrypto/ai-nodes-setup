@@ -82,7 +82,7 @@ echo "✅ All dependencies are ready!"
 
 ### 2. Setup Vikey
 echo "🔑 Setting up Vikey..."
-cd ~/
+cd "$HOME"
 if [ ! -d "vikey-inference" ]; then
     git clone https://github.com/direkturcrypto/vikey-inference
 fi
@@ -125,8 +125,43 @@ else
   echo "Response was: $TEST_RESPONSE"
 fi
 
-### 4. Wallet Handling
-cd ~/dria-nodes
+### 4. Crypto Wallet Generator
+echo "💰 Setting up crypto wallet generator..."
+cd "$HOME"
+mkdir -p crypto-generator
+cd crypto-generator
+npm init -y > /dev/null
+
+# Use ethers v5 (CommonJS) so require() works smoothly
+npm install ethers@5 > /dev/null
+
+cat > crypto-generator.js <<'EOF'
+const fs = require('fs');
+const { Wallet } = require('ethers');
+
+const args = process.argv.slice(2);
+const count = parseInt(args[0] || "1", 10);
+if (isNaN(count) || count < 1) {
+  console.error("Usage: node crypto-generator.js <count>");
+  process.exit(1);
+}
+
+const wallets = [];
+for (let i = 0; i < count; i++) {
+  const w = Wallet.createRandom();
+  wallets.push({
+    address: w.address,
+    private_key: w.privateKey
+  });
+}
+
+fs.writeFileSync("wallets.json", JSON.stringify(wallets, null, 2));
+console.log(`Generated ${count} wallet(s) saved in wallets.json`);
+EOF
+
+### 5. Wallet Handling
+cd "$HOME/dria-nodes"
+mkdir -p "$HOME/dria-nodes"
 
 echo "💰 Wallet setup options:"
 echo "1) Generate new wallet(s)"
@@ -135,13 +170,18 @@ read -p "Choose option [1/2]: " WALLET_OPTION
 
 if [ "$WALLET_OPTION" == "1" ]; then
   read -p "🤔 How many wallets do you want to generate? " WALLET_COUNT
-  cd ~/crypto-generator
+  cd "$HOME/crypto-generator"
   node crypto-generator.js "$WALLET_COUNT"
-  WALLET_FILE=~/crypto-generator/wallets.json
+  WALLET_FILE="$HOME/crypto-generator/wallets.json"
 elif [ "$WALLET_OPTION" == "2" ]; then
   read -p "📂 Enter path to your wallet.json: " WALLET_FILE
+  WALLET_FILE="${WALLET_FILE/#\~/$HOME}" # expand ~
+  if [ ! -f "$WALLET_FILE" ]; then
+    echo "❌ File not found: $WALLET_FILE"
+    exit 1
+  fi
   if ! jq empty "$WALLET_FILE" 2>/dev/null; then
-    echo "❌ Invalid JSON file."
+    echo "❌ Invalid JSON file format: $WALLET_FILE"
     exit 1
   fi
 else
@@ -149,14 +189,14 @@ else
   exit 1
 fi
 
-### 5. Nodes per wallet
+### 6. Nodes per wallet
 read -p "⚡ How many nodes should run per wallet? " NODES_PER_WALLET
 if ! [[ "$NODES_PER_WALLET" =~ ^[0-9]+$ ]] || [ "$NODES_PER_WALLET" -lt 1 ]; then
   echo "❌ Invalid number."
   exit 1
 fi
 
-### 6. Generate docker-compose per wallet
+### 7. Generate docker-compose per wallet
 WALLETS=$(cat "$WALLET_FILE" | jq -c '.[]')
 i=1
 for row in $WALLETS; do
@@ -195,7 +235,7 @@ EOF
   i=$((i+1))
 done
 
-### 7. Start & Restart helper
+### 8. Start & Restart helper
 cat > manage-dria.sh <<'EOF'
 #!/bin/bash
 CMD=$1
