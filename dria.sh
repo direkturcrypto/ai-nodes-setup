@@ -13,36 +13,72 @@ if [ -z "$VIKEY_API_KEY" ]; then
 fi
 
 ### 1. Install dependencies
-echo "📦 Installing dependencies (docker, docker-compose, nodejs, npm, pm2, curl, git, jq, nano)..."
-sudo apt update -y
-sudo apt install -y curl git nano jq
+echo "📦 Checking dependencies (docker, nodejs, npm, pm2, curl, git, jq, nano)..."
 
-# Install Docker
-if ! command -v docker &> /dev/null; then
-    echo "🐳 Installing Docker..."
-    curl -fsSL https://get.docker.com | sh
-    sudo usermod -aG docker "$USER" || true
-    echo "ℹ️ If this is your first Docker install, you may need to log out/in for group changes to apply."
-else
-    echo "✅ Docker already installed."
+NEED_UPDATE=false
+
+install_if_missing() {
+  PKG=$1
+  CMD=$2
+  if ! command -v $CMD &>/dev/null; then
+    echo "📥 Installing $PKG..."
+    NEED_UPDATE=true
+    sudo apt install -y $PKG
+  else
+    echo "✅ $PKG already installed."
+  fi
+}
+
+# Basic tools
+install_if_missing "curl" curl
+install_if_missing "git" git
+install_if_missing "nano" nano
+install_if_missing "jq" jq
+install_if_missing "vim" vim
+
+# Run apt update only if needed
+if $NEED_UPDATE; then
+  echo "🔄 Running apt update once..."
+  sudo apt update -y
 fi
 
-# Install Docker Compose (plugin or standalone)
-if ! command -v docker-compose &> /dev/null; then
-    echo "🐳 Installing Docker Compose..."
-    sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
-      -o /usr/local/bin/docker-compose
-    sudo chmod +x /usr/local/bin/docker-compose
+# Docker
+if ! command -v docker &>/dev/null; then
+  echo "🐳 Installing Docker..."
+  sudo apt-get install -y docker docker-compose
+  sudo usermod -aG docker "$USER" || true
+  echo "ℹ️ If this is your first Docker install, log out/in to apply group changes."
 else
-    echo "✅ docker-compose already installed."
+  echo "✅ Docker already installed."
 fi
 
-# Install Node.js + npm latest
-echo "📦 Installing Node.js + npm..."
-curl -fsSL https://deb.nodesource.com/setup_current.x | sudo -E bash -
-sudo apt install -y nodejs
-sudo npm install -g npm pm2
-echo "✅ Dependencies installed!"
+# Node.js + npm
+if ! command -v node &>/dev/null; then
+  echo "📥 Installing Node.js + npm..."
+  curl -fsSL https://deb.nodesource.com/setup_current.x | sudo -E bash -
+  sudo apt install -y nodejs
+else
+  echo "✅ Node.js already installed (version $(node -v))."
+fi
+
+# n & pm2
+if ! command -v n &>/dev/null; then
+  echo "📥 Installing n (Node version manager)..."
+  sudo npm install -g n
+fi
+
+if ! command -v pm2 &>/dev/null; then
+  echo "📥 Installing pm2..."
+  sudo npm install -g pm2
+fi
+
+# Upgrade to latest Node if using n
+if command -v n &>/dev/null; then
+  echo "⬆️ Ensuring latest Node.js..."
+  sudo n latest
+fi
+
+echo "✅ All dependencies are ready!"
 
 ### 2. Setup Vikey
 echo "🔑 Setting up Vikey..."
@@ -60,7 +96,7 @@ fi
 cat > .env <<EOF
 # Vikey Inference Configuration
 NODE_PORT=14441
-DEFAULT_MODEL=llama-3.2-3b-instruct
+DEFAULT_MODEL=llama-3.3-70b-instruct
 VIKEY_API_KEY=${VIKEY_API_KEY}
 EOF
 
@@ -70,105 +106,92 @@ sleep 3
 echo "🚀 Vikey started! (logs: ~/vikey-inference/vikey.log)"
 
 ### 3. Test Vikey
-echo "🔍 Testing Vikey..."
-RESPONSE=$(curl -s http://localhost:14441 || true)
-if [[ "$RESPONSE" == *"Endpoint not supported"* ]]; then
-    echo "✅ Vikey OK → Response: ${RESPONSE}"
+echo "🔍 Testing Vikey with API..."
+TEST_RESPONSE=$(curl -s -X POST https://api.vikey.ai/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${VIKEY_API_KEY}" \
+  -d '{
+    "model": "llama-3.3-70b-instruct",
+    "max_tokens": 10,
+    "n": 1,
+    "stream": false,
+    "messages": [{"role":"user","content":"hi"}]
+  }')
+
+if echo "$TEST_RESPONSE" | jq -e '.object=="chat.completion"' >/dev/null 2>&1; then
+  echo "✅ Vikey API test successful!"
 else
-    echo "❌ Vikey test failed. Got: ${RESPONSE}"
-    echo "🪵 Check logs: tail -n 200 ~/vikey-inference/vikey.log"
+  echo "❌ Vikey API test failed!"
+  echo "Response was: $TEST_RESPONSE"
 fi
 
-### 4. Crypto Wallet Generator
-echo "💰 Setting up crypto wallet generator..."
-cd ~/
-mkdir -p crypto-generator
-cd crypto-generator
-npm init -y > /dev/null
+### 4. Wallet Handling
+cd ~/dria-nodes
 
-# Use ethers v5 (CommonJS) so require() works smoothly
-npm install ethers@5 > /dev/null
+echo "💰 Wallet setup options:"
+echo "1) Generate new wallet(s)"
+echo "2) Use existing wallet.json"
+read -p "Choose option [1/2]: " WALLET_OPTION
 
-cat > crypto-generator.js <<'EOF'
-const fs = require('fs');
-const { Wallet } = require('ethers');
-
-const args = process.argv.slice(2);
-const count = parseInt(args[0] || "1", 10);
-if (isNaN(count) || count < 1) {
-  console.error("Usage: node crypto-generator.js <count>");
-  process.exit(1);
-}
-
-const wallets = [];
-for (let i = 0; i < count; i++) {
-  const w = Wallet.createRandom();
-  wallets.push({
-    address: w.address,
-    private_key: w.privateKey
-  });
-}
-
-fs.writeFileSync("wallets.json", JSON.stringify(wallets, null, 2));
-console.log(`Generated ${count} wallet(s) saved in wallets.json`);
-EOF
-
-echo -n "🤔 How many wallets do you want to generate? "
-read -r WALLET_COUNT
-if ! [[ "$WALLET_COUNT" =~ ^[0-9]+$ ]] || [ "$WALLET_COUNT" -lt 1 ]; then
-  echo "❌ Invalid number. Aborting."
+if [ "$WALLET_OPTION" == "1" ]; then
+  read -p "🤔 How many wallets do you want to generate? " WALLET_COUNT
+  cd ~/crypto-generator
+  node crypto-generator.js "$WALLET_COUNT"
+  WALLET_FILE=~/crypto-generator/wallets.json
+elif [ "$WALLET_OPTION" == "2" ]; then
+  read -p "📂 Enter path to your wallet.json: " WALLET_FILE
+  if ! jq empty "$WALLET_FILE" 2>/dev/null; then
+    echo "❌ Invalid JSON file."
+    exit 1
+  fi
+else
+  echo "❌ Invalid option."
   exit 1
 fi
 
-node crypto-generator.js "$WALLET_COUNT"
-echo "✅ $WALLET_COUNT wallets generated in ~/crypto-generator/wallets.json"
-
-### 5. Setup Docker Network
-echo "🌐 Ensuring docker network 'dria-nodes' exists..."
-if ! docker network ls | grep -q "dria-nodes"; then
-    docker network create --subnet=10.172.1.0/16 dria-nodes
-    echo "✅ Docker network created!"
-else
-    echo "ℹ️ Docker network already exists."
+### 5. Nodes per wallet
+read -p "⚡ How many nodes should run per wallet? " NODES_PER_WALLET
+if ! [[ "$NODES_PER_WALLET" =~ ^[0-9]+$ ]] || [ "$NODES_PER_WALLET" -lt 1 ]; then
+  echo "❌ Invalid number."
+  exit 1
 fi
 
-### 6. Install Dria Nodes
-echo "⚡ Setting up Dria nodes..."
-cd ~/
-mkdir -p dria-nodes
-cd dria-nodes
-
-WALLETS=$(cat ~/crypto-generator/wallets.json | jq -c '.[]')
-
+### 6. Generate docker-compose per wallet
+WALLETS=$(cat "$WALLET_FILE" | jq -c '.[]')
 i=1
 for row in $WALLETS; do
   ADDR=$(echo "$row" | jq -r '.address')
   PRIV=$(echo "$row" | jq -r '.private_key')
   NODE_DIR="dria-node-$ADDR"
-
   mkdir -p "$NODE_DIR"
-  cat > "$NODE_DIR/docker-compose.yml" <<EOF
-services:
-  compute_node_$i:
+
+  echo "services:" > "$NODE_DIR/docker-compose.yml"
+  for n in $(seq 1 $NODES_PER_WALLET); do
+    cat >> "$NODE_DIR/docker-compose.yml" <<EOF
+  compute_node_${i}_${n}:
     image: "firstbatch/dkn-compute-node:latest"
     environment:
       RUST_LOG: \${RUST_LOG:-none,dkn_compute=info}
-      # Dria
       DKN_WALLET_SECRET_KEY: $PRIV
       DKN_MODELS: llama3.3:70b-instruct-q4_K_M,llama3.1:8b-instruct-q4_K_M,llama3.2:1b-instruct-q4_K_M
-      DKN_P2P_LISTEN_ADDR: /ip4/0.0.0.0/tcp/4001
-      # Ollama/Vikey
+      DKN_P2P_LISTEN_ADDR: /ip4/0.0.0.0/tcp/$((4000+n))
       OLLAMA_HOST: http://10.172.1.1
       OLLAMA_PORT: 14441
       OLLAMA_AUTO_PULL: true
     networks:
       dria-nodes:
     restart: "on-failure"
+
+EOF
+  done
+
+  cat >> "$NODE_DIR/docker-compose.yml" <<EOF
 networks:
   dria-nodes:
     external: true
 EOF
-  echo "📝 Node $i configured at $NODE_DIR"
+
+  echo "📝 Wallet $ADDR → $NODES_PER_WALLET node(s) configured at $NODE_DIR"
   i=$((i+1))
 done
 
