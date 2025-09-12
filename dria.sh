@@ -189,14 +189,23 @@ else
   exit 1
 fi
 
-### 6. Nodes per wallet
+### 6. Ensure dria-nodes docker network
+echo "🌐 Ensuring docker network 'dria-nodes' exists..."
+if ! docker network ls | grep -q "dria-nodes"; then
+    docker network create --subnet=10.172.0.0/16 dria-nodes
+    echo "✅ Docker network 'dria-nodes' created."
+else
+    echo "ℹ️ Docker network 'dria-nodes' already exists."
+fi
+
+### 7. Nodes per wallet
 read -p "⚡ How many nodes should run per wallet? " NODES_PER_WALLET
 if ! [[ "$NODES_PER_WALLET" =~ ^[0-9]+$ ]] || [ "$NODES_PER_WALLET" -lt 1 ]; then
   echo "❌ Invalid number."
   exit 1
 fi
 
-### 7. Generate docker-compose per wallet
+### 8. Generate docker-compose per wallet
 WALLETS=$(cat "$WALLET_FILE" | jq -c '.[]')
 i=1
 for row in $WALLETS; do
@@ -214,7 +223,7 @@ for row in $WALLETS; do
       RUST_LOG: \${RUST_LOG:-none,dkn_compute=info}
       DKN_WALLET_SECRET_KEY: $PRIV
       DKN_MODELS: llama3.3:70b-instruct-q4_K_M,llama3.1:8b-instruct-q4_K_M,llama3.2:1b-instruct-q4_K_M
-      DKN_P2P_LISTEN_ADDR: /ip4/0.0.0.0/tcp/$((4000+n))
+      DKN_P2P_LISTEN_ADDR: /ip4/0.0.0.0/tcp/4001
       OLLAMA_HOST: http://10.172.1.1
       OLLAMA_PORT: 14441
       OLLAMA_AUTO_PULL: true
@@ -235,22 +244,36 @@ EOF
   i=$((i+1))
 done
 
-### 8. Start & Restart helper
+### 9. Start & Restart helper
 cat > manage-dria.sh <<'EOF'
 #!/bin/bash
+
+get_compose_cmd() {
+  if command -v docker-compose &>/dev/null; then
+    echo "docker-compose"
+  elif docker compose version &>/dev/null; then
+    echo "docker compose"
+  else
+    echo "❌ Neither docker-compose nor docker compose found!" >&2
+    exit 1
+  fi
+}
+
 CMD=$1
+CMD_COMPOSE=$(get_compose_cmd)
+
 case $CMD in
   start)
     echo "🚀 Starting all Dria nodes... (powered by direkturcrypto)"
     for d in dria-node-*/; do
-      (cd "$d" && docker-compose up -d)
+      (cd "$d" && $CMD_COMPOSE up -d --build)
     done
     echo "✅ All nodes attempted to start."
     ;;
   restart)
     echo "♻️ Restarting all Dria nodes... (powered by direkturcrypto)"
     for d in dria-node-*/; do
-      (cd "$d" && docker-compose down && docker-compose up -d)
+      (cd "$d" && $CMD_COMPOSE down && $CMD_COMPOSE up -d --build)
     done
     echo "✅ All nodes attempted to restart."
     ;;
